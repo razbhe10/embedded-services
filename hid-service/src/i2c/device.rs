@@ -178,6 +178,31 @@ impl<A: AddressMode + Copy, B: I2c<A>> Device<A, B> {
     }
 }
 
+impl<A: AddressMode + Copy, B: I2c<A>> Device<A, B> {
+    /// Run a single HID request directly (no mailbox wait).
+    pub async fn run_request(
+        &self,
+        req: hid::Request<'static>,
+    ) -> Result<Option<hid::Response<'static>>, Error<B::Error>> {
+        match req {
+            hid::Request::Descriptor => {
+                let desc = self.read_hid_descriptor().await?;
+                Ok(Some(hid::Response::Descriptor(desc)))
+            }
+            hid::Request::ReportDescriptor => {
+                let desc = self.read_report_descriptor().await?;
+                Ok(Some(hid::Response::ReportDescriptor(desc)))
+            }
+            hid::Request::InputReport => {
+                let rpt = self.handle_input_report().await?;
+                Ok(Some(hid::Response::InputReport(rpt)))
+            }
+            hid::Request::Command(cmd) => self.handle_command(&cmd).await,
+            _ => unimplemented!(),
+        }
+    }
+}
+
 impl<A: AddressMode + Copy, B: I2c<A>> DeviceContainer for Device<A, B> {
     fn get_hid_device(&self) -> &hid::Device {
         &self.device

@@ -20,6 +20,14 @@ macro_rules! define_i2c_passthrough_device_task {
 
             info!("Starting device task");
             loop {
+                #[cfg(feature = "mock")]
+                {
+                    if let Some(req) = next_mock_request().await {
+                        let _ = device.run_request(req).await;
+                    }
+                }
+
+                #[cfg(not(feature = "mock"))]
                 info!("Processing request");
                 if let Err(e) = device.process_request().await {
                     error!("Device error: {:?}", e);
