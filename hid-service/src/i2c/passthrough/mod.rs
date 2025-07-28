@@ -10,28 +10,42 @@ macro_rules! define_i2c_passthrough_device_task {
             use ::embassy_sync::once_lock::OnceLock;
             use ::embedded_services::{define_static_buffer, error, hid, info};
             use $crate::i2c::Device;
+            ::embedded_services::hid::init();
             define_static_buffer!(gen_buffer, u8, [0; 512]);
             let gen_buffer = gen_buffer::get_mut().unwrap();
 
+            // use the custom register file for the HID device
+            let custom_regs = RegisterFile {
+                hid_desc_reg: 0x00,
+                report_desc_reg: 0x20,
+                input_reg: 0x60,
+                output_reg: 0x62,
+                command_reg: 0x64,
+                data_reg: 0x66,
+            };
+
             info!("Create HID passthrough device {}", id.0);
             static DEVICE: OnceLock<Device<u8, $bus>> = OnceLock::new();
-            let device = DEVICE.get_or_init(|| Device::new(id, addr, bus, Default::default(), gen_buffer));
-            hid::register_device(device).await.unwrap();
+            // use custom registers
+            let device = DEVICE.get_or_init(|| Device::new(id, addr, bus, custom_regs, gen_buffer));
+
+            if let Err(e) = hid::register_device(device).await {
+                embassy_sifive::sprintln!("Failed to register HID device: {:?}", e);
+            }
 
             info!("Starting device task");
             loop {
-                #[cfg(feature = "mock")]
+                // Wait for the next mock request
                 {
                     if let Some(req) = next_mock_request().await {
                         let _ = device.run_request(req).await;
                     }
                 }
 
-                #[cfg(not(feature = "mock"))]
-                info!("Processing request");
-                if let Err(e) = device.process_request().await {
-                    error!("Device error: {:?}", e);
-                }
+                // info!("Processing request");
+                // if let Err(e) = device.process_request().await {
+                //     embassy_sifive::sprintln!("Device error: {:?}", e);
+                // }
             }
         }
     };
