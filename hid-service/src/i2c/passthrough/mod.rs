@@ -35,17 +35,17 @@ macro_rules! define_i2c_passthrough_device_task {
 
             info!("Starting device task");
             loop {
-                // Wait for the next mock request
-                {
-                    if let Some(req) = next_mock_request().await {
-                        let _ = device.run_request(req).await;
-                    }
-                }
-
-                // info!("Processing request");
-                // if let Err(e) = device.process_request().await {
-                //     embassy_sifive::sprintln!("Device error: {:?}", e);
+                // // Wait for the next mock request
+                // {
+                //     if let Some(req) = next_mock_request().await {
+                //         let _ = device.run_request(req).await;
+                //     }
                 // }
+
+                info!("Processing request");
+                if let Err(e) = device.process_request().await {
+                    embassy_sifive::sprintln!("Device error: {:?}", e);
+                }
             }
         }
     };
