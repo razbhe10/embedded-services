@@ -48,7 +48,7 @@ embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "c599435",
 ] }
 embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "c599435" }
 embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "c599435" }
-embedded-batteries-async = "0.1.0"
+embedded-batteries-async = "0.2.0"
 embedded-cfu-protocol = { git = "https://github.com/OpenDevicePartnership/embedded-cfu" }
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
