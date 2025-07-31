@@ -39,6 +39,7 @@ pub type GlobalRawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawM
 #[cfg(all(not(test), target_os = "none", not(feature = "mpssfh")))]
 pub type GlobalRawMutex = embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 
+/// Global Mutex type, CriticalSectionRawMutex is used in a microcontroller context, whereas ThreadModeRawMutex is used
 #[cfg(all(not(test), target_os = "none", feature = "mpssfh"))]
 pub type GlobalRawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
