@@ -186,7 +186,27 @@ impl<A: AddressMode + Copy, B: I2c<A>> Device<A, B> {
                 return Err(Error::Bus(e));
             }
 
-            return Ok(Some(Response::FeatureReport(self.buffer.reference())));
+            // Parse the 2-byte HID-over-I2C length prefix to determine actual response size
+            let len_prefix: [u8; 2] = buf
+                .get(0..2)
+                .ok_or(Error::Hid(hid::Error::InvalidSize(InvalidSizeError {
+                    expected: 2,
+                    actual: buffer_len,
+                })))?
+                .try_into()
+                .map_err(|_| Error::Hid(hid::Error::Serialize))?;
+            let response_len = u16::from_le_bytes(len_prefix) as usize;
+
+            if response_len == 0 {
+                return Ok(None);
+            }
+
+            return Ok(Some(Response::FeatureReport(
+                self.buffer
+                    .reference()
+                    .slice(0..response_len.min(buffer_len))
+                    .map_err(Error::Buffer)?,
+            )));
         }
 
         Ok(None)
