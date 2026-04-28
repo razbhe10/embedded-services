@@ -183,53 +183,23 @@ impl<A: AddressMode + Copy, B: I2c<A>> Device<A, B> {
             // Two-phase read: first read the 2-byte length prefix, then read the remaining data.
             // This avoids clocking out the entire buffer over I2C when the response is small.
             trace!("Reading response length prefix");
-            if let Err(e) = bus
-                .read(
-                    self.address,
-                    buf.get_mut(0..2)
-                        .ok_or(Error::Hid(hid::Error::InvalidSize(InvalidSizeError {
-                            expected: 2,
-                            actual: buffer_len,
-                        })))?,
-                )
-                .await
-            {
+            let mut len_prefix = [0u8; 2];
+            if let Err(e) = bus.read(self.address, &mut len_prefix).await {
                 error!("Failed to read response length prefix");
                 return Err(Error::Bus(e));
             }
-
-            let len_prefix: [u8; 2] = buf
-                .get(0..2)
-                .ok_or(Error::Hid(hid::Error::InvalidSize(InvalidSizeError {
-                    expected: 2,
-                    actual: buffer_len,
-                })))?
-                .try_into()
-                .map_err(|_| Error::Hid(hid::Error::Serialize))?;
             let response_len = u16::from_le_bytes(len_prefix) as usize;
 
             if response_len == 0 {
                 return Ok(None);
             }
 
-            // Read the remaining response data after the length prefix
-            if response_len > 2 {
-                let read_len = response_len.min(buffer_len);
-                trace!("Reading {} response bytes", read_len - 2);
-                if let Err(e) = bus
-                    .read(
-                        self.address,
-                        buf.get_mut(2..read_len)
-                            .ok_or(Error::Hid(hid::Error::InvalidSize(InvalidSizeError {
-                                expected: read_len,
-                                actual: buffer_len,
-                            })))?,
-                    )
-                    .await
-                {
-                    error!("Failed to read response data");
-                    return Err(Error::Bus(e));
-                }
+            // Read the full response (including length prefix) into buf
+            let read_len = response_len.min(buffer_len);
+            trace!("Reading {} response bytes", read_len);
+            if let Err(e) = bus.read(self.address, &mut buf[..read_len]).await {
+                error!("Failed to read response data");
+                return Err(Error::Bus(e));
             }
 
             return Ok(Some(Response::FeatureReport(
