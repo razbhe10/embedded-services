@@ -1,5 +1,6 @@
 //! Definitions for deferred execution of commands
-use core::sync::atomic::{AtomicUsize, Ordering};
+use crate::AtomicUsize;
+use crate::Ordering;
 
 use crate::debug;
 use embassy_sync::{blocking_mutex::raw::RawMutex, mutex::Mutex, signal::Signal};
@@ -62,6 +63,8 @@ impl<M: RawMutex, C, R> Channel<M, C, R> {
     }
 
     /// Wait for an invocation
+    ///
+    /// DROP SAFETY: Call to drop safe embassy primitive
     pub async fn receive(&self) -> Request<'_, M, C, R> {
         let (command, request_id) = self.command.wait().await;
         Request {
@@ -99,6 +102,7 @@ impl<M: RawMutex, C, R> Request<'_, M, C, R> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::GlobalRawMutex;

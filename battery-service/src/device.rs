@@ -1,8 +1,15 @@
-use embassy_sync::{channel::Channel, mutex::Mutex};
+use embassy_sync::{
+    channel::Channel,
+    mutex::{Mutex, MutexGuard},
+};
 use embassy_time::Duration;
+use embedded_batteries_async::{
+    acpi::{BmcControlFlags, BmdCapabilityFlags, BmdStatusFlags, PowerThresholdSupport},
+    smart_battery::BatteryModeFields,
+};
 use embedded_services::{GlobalRawMutex, Node, NodeContainer, SyncCell};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 /// Device errors.
 pub enum FuelGaugeError {
@@ -31,7 +38,7 @@ pub enum InternalResponse {
 pub type Response = Result<InternalResponse, FuelGaugeError>;
 
 /// Standard static battery data cache
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct StaticBatteryMsgs {
     /// Manufacturer Name.
@@ -54,10 +61,47 @@ pub struct StaticBatteryMsgs {
 
     /// Device Serial Number.
     pub serial_num: [u8; 4],
+
+    /// Battery Mode.
+    pub battery_mode: BatteryModeFields,
+
+    pub design_cap_warning: u32,
+
+    pub design_cap_low: u32,
+
+    pub measurement_accuracy: u32,
+
+    pub max_sample_time: u32,
+
+    pub min_sample_time: u32,
+
+    pub max_averaging_interval: u32,
+
+    pub min_averaging_interval: u32,
+
+    pub cap_granularity_1: u32,
+
+    pub cap_granularity_2: u32,
+
+    pub power_threshold_support: PowerThresholdSupport,
+
+    pub max_instant_pwr_threshold: u32,
+
+    pub max_sus_pwr_threshold: u32,
+
+    pub bmc_flags: BmcControlFlags,
+
+    pub bmd_capability: BmdCapabilityFlags,
+
+    pub bmd_recalibrate_count: u32,
+
+    pub bmd_quick_recalibrate_time: u32,
+
+    pub bmd_slow_recalibrate_time: u32,
 }
 
 /// Standard dynamic battery data cache
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DynamicBatteryMsgs {
     /// Battery Max Power in mW.
@@ -65,6 +109,12 @@ pub struct DynamicBatteryMsgs {
 
     /// Battery Sustained Power in mW.
     pub sus_power_mw: u32,
+
+    /// Turbo Load Voltage in mV.
+    pub turbo_vload_mv: u32,
+
+    /// Turbo RHF Effective in mOhm.
+    pub turbo_rhf_effective_mohm: u32,
 
     /// Full Charge Capacity in mWh.
     pub full_charge_capacity_mwh: u32,
@@ -101,6 +151,8 @@ pub struct DynamicBatteryMsgs {
 
     /// Battery Avg Current.
     pub average_current_ma: i16,
+
+    pub bmd_status: BmdStatusFlags,
 }
 
 /// Fuel gauge ID
@@ -181,6 +233,22 @@ impl Device {
     /// Get static battery cache.
     pub async fn get_static_battery_cache(&self) -> StaticBatteryMsgs {
         *self.static_battery_cache.lock().await
+    }
+
+    /// Get static battery cache by grabbing the lock.
+    ///
+    /// WARNING: More performant than get_static_battery_cache,
+    /// but drop the MutexGuard before the next await point to avoid deadlocks!
+    pub async fn get_static_battery_cache_guarded(&self) -> MutexGuard<'_, GlobalRawMutex, StaticBatteryMsgs> {
+        self.static_battery_cache.lock().await
+    }
+
+    /// Get dynamic battery cache by grabbing the lock.
+    ///
+    /// WARNING: More performant than get_dynamic_battery_cache,
+    /// but drop the MutexGuard before the next await point to avoid deadlocks!
+    pub async fn get_dynamic_battery_cache_guarded(&self) -> MutexGuard<'_, GlobalRawMutex, DynamicBatteryMsgs> {
+        self.dynamic_battery_cache.lock().await
     }
 
     /// Set device timeout.

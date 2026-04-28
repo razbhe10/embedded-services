@@ -1,26 +1,26 @@
 #![no_std]
 #![no_main]
 
-use ::tps6699x::ADDR0;
-use defmt::info;
+use ::tps6699x::{ADDR1, TPS66994_NUM_PORTS};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_imxrt::gpio::{Input, Inverter, Pull};
-use embassy_imxrt::i2c::master::{Config, I2cMaster};
 use embassy_imxrt::i2c::Async;
+use embassy_imxrt::i2c::master::{Config, I2cMaster};
 use embassy_imxrt::{bind_interrupts, peripherals};
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_sync::once_lock::OnceLock;
 use embassy_time::{self as _, Delay};
 use embedded_cfu_protocol::protocol_definitions::{FwUpdateOffer, FwUpdateOfferResponse, FwVersion, HostToken};
-use embedded_services::comms;
+use embedded_services::GlobalRawMutex;
 use embedded_services::power::policy::DeviceId as PowerId;
-use embedded_services::type_c::{self, ControllerId};
+use embedded_services::type_c::{self, Cached, ControllerId};
+use embedded_services::{error, info};
 use embedded_usb_pd::GlobalPortId;
 use static_cell::StaticCell;
 use tps6699x::asynchronous::embassy as tps6699x;
-use type_c_service::driver::tps6699x::{self as tps6699x_driver, Tps66994Wrapper};
+use type_c_service::driver::tps6699x::{self as tps6699x_drv};
+use type_c_service::wrapper::ControllerWrapper;
+use type_c_service::wrapper::backing::{ReferencedStorage, Storage};
 
 extern crate rt685s_evk_example;
 
@@ -44,92 +44,37 @@ impl type_c_service::wrapper::FwOfferValidator for Validator {
 }
 
 type BusMaster<'a> = I2cMaster<'a, Async>;
-type BusDevice<'a> = I2cDevice<'a, NoopRawMutex, BusMaster<'a>>;
-type Wrapper<'a> = Tps66994Wrapper<'a, NoopRawMutex, BusDevice<'a>, Validator>;
-type Controller<'a> = tps6699x::controller::Controller<NoopRawMutex, BusDevice<'a>>;
-type Interrupt<'a> = tps6699x::Interrupt<'a, NoopRawMutex, BusDevice<'a>>;
-
-/// Battery mock that receives messages from power policy
-mod battery {
-    use defmt::{info, trace};
-    use embedded_services::comms;
-    use embedded_services::power::policy;
-
-    pub struct Device {
-        pub tp: comms::Endpoint,
-    }
-
-    impl Device {
-        pub fn new() -> Self {
-            Self {
-                tp: comms::Endpoint::uninit(comms::EndpointID::Internal(comms::Internal::Battery)),
-            }
-        }
-    }
-
-    impl comms::MailboxDelegate for Device {
-        fn receive(&self, message: &comms::Message) -> Result<(), comms::MailboxDelegateError> {
-            trace!("Got message");
-
-            let message = message
-                .data
-                .get::<policy::CommsMessage>()
-                .ok_or(comms::MailboxDelegateError::MessageNotFound)?;
-
-            match message.data {
-                policy::CommsData::ConsumerDisconnected(id) => {
-                    info!("Consumer disconnected: {}", id.0);
-                    Ok(())
-                }
-                policy::CommsData::ConsumerConnected(id, capability) => {
-                    info!("Consumer connected: {} {:?}", id.0, capability);
-                    Ok(())
-                }
-            }
-        }
-    }
-}
-
-/// Debug accesory listener mock
-mod debug {
-    use defmt::{info, trace};
-    use embedded_services::comms;
-    use embedded_services::type_c;
-
-    pub struct Device {
-        pub tp: comms::Endpoint,
-    }
-
-    impl Device {
-        pub fn new() -> Self {
-            Self {
-                tp: comms::Endpoint::uninit(comms::EndpointID::Internal(comms::Internal::Usbc)),
-            }
-        }
-    }
-
-    impl comms::MailboxDelegate for Device {
-        fn receive(&self, message: &comms::Message) -> Result<(), comms::MailboxDelegateError> {
-            trace!("Got message");
-            if let Some(message) = message.data.get::<type_c::comms::DebugAccessoryMessage>() {
-                info!("Debug accessory message: {:?}", message);
-            }
-
-            Ok(())
-        }
-    }
-}
+type BusDevice<'a> = I2cDevice<'a, GlobalRawMutex, BusMaster<'a>>;
+type Tps6699xMutex<'a> = Mutex<GlobalRawMutex, tps6699x_drv::Tps6699x<'a, GlobalRawMutex, BusDevice<'a>>>;
+type Wrapper<'a> = ControllerWrapper<'a, GlobalRawMutex, Tps6699xMutex<'a>, Validator>;
+type Controller<'a> = tps6699x::controller::Controller<GlobalRawMutex, BusDevice<'a>>;
+type Interrupt<'a> = tps6699x::Interrupt<'a, GlobalRawMutex, BusDevice<'a>>;
 
 #[embassy_executor::task]
 async fn pd_controller_task(controller: &'static Wrapper<'static>) {
     loop {
-        controller.process().await;
+        if let Err(e) = controller.process_next_event().await {
+            error!("Error processing controller event: {:?}", e);
+        }
     }
 }
 
 #[embassy_executor::task]
 async fn interrupt_task(mut int_in: Input<'static>, mut interrupt: Interrupt<'static>) {
     tps6699x::task::interrupt_task(&mut int_in, &mut [&mut interrupt]).await;
+}
+
+#[embassy_executor::task]
+async fn type_c_service_task() -> ! {
+    type_c_service::task(Default::default()).await;
+    unreachable!()
+}
+
+#[embassy_executor::task]
+async fn power_policy_service_task() {
+    power_policy_service::task::task(Default::default())
+        .await
+        .expect("Failed to start power policy service task");
 }
 
 #[embassy_executor::main]
@@ -142,23 +87,21 @@ async fn main(spawner: Spawner) {
     type_c::controller::init();
 
     info!("Spawining power policy task");
-    spawner.must_spawn(power_policy_service::task(Default::default()));
+    spawner.must_spawn(power_policy_service_task());
 
     info!("Spawining type-c service task");
-    spawner.must_spawn(type_c_service::task());
+    spawner.must_spawn(type_c_service_task());
 
     let int_in = Input::new(p.PIO1_7, Pull::Up, Inverter::Disabled);
-    static BUS: OnceLock<Mutex<NoopRawMutex, BusMaster<'static>>> = OnceLock::new();
-    let bus = BUS.get_or_init(|| {
-        Mutex::new(
-            I2cMaster::new_async(p.FLEXCOMM2, p.PIO0_18, p.PIO0_17, Irqs, Config::default(), p.DMA0_CH5).unwrap(),
-        )
-    });
+    static BUS: StaticCell<Mutex<GlobalRawMutex, BusMaster<'static>>> = StaticCell::new();
+    let bus = BUS.init(Mutex::new(
+        I2cMaster::new_async(p.FLEXCOMM2, p.PIO0_18, p.PIO0_17, Irqs, Config::default(), p.DMA0_CH5).unwrap(),
+    ));
 
     let device = I2cDevice::new(bus);
 
     static CONTROLLER: StaticCell<Controller<'static>> = StaticCell::new();
-    let controller = CONTROLLER.init(Controller::new_tps66994(device, ADDR0).unwrap());
+    let controller = CONTROLLER.init(Controller::new_tps66994(device, ADDR1).unwrap());
     let (mut tps6699x, interrupt) = controller.make_parts();
 
     info!("Resetting PD controller");
@@ -182,36 +125,30 @@ async fn main(spawner: Spawner) {
         .await
         .unwrap();
 
-    static PD_PORTS: [GlobalPortId; 2] = [PORT0_ID, PORT1_ID];
+    static STORAGE: StaticCell<Storage<TPS66994_NUM_PORTS, GlobalRawMutex>> = StaticCell::new();
+    let storage = STORAGE.init(Storage::new(
+        CONTROLLER0_ID,
+        0, // CFU component ID
+        [(PORT0_ID, PORT0_PWR_ID), (PORT1_ID, PORT1_PWR_ID)],
+    ));
+
+    static REFERENCED: StaticCell<ReferencedStorage<TPS66994_NUM_PORTS, GlobalRawMutex>> = StaticCell::new();
+    let referenced = REFERENCED.init(
+        storage
+            .create_referenced()
+            .expect("Failed to create referenced storage"),
+    );
 
     info!("Spawining PD controller task");
-    static PD_CONTROLLER: OnceLock<Wrapper> = OnceLock::new();
-    let pd_controller = PD_CONTROLLER.get_or_init(|| {
-        tps6699x_driver::tps66994(
-            tps6699x,
-            CONTROLLER0_ID,
-            &PD_PORTS,
-            [PORT0_PWR_ID, PORT1_PWR_ID],
-            0x00,
-            Default::default(),
-            Validator,
-        )
-        .unwrap()
-    });
+    static CONTROLLER_MUTEX: StaticCell<Tps6699xMutex<'_>> = StaticCell::new();
+    let controller_mutex = CONTROLLER_MUTEX.init(Mutex::new(tps6699x_drv::tps66994(tps6699x, Default::default())));
 
-    pd_controller.register().await.unwrap();
-    spawner.must_spawn(pd_controller_task(pd_controller));
+    static WRAPPER: StaticCell<Wrapper> = StaticCell::new();
+    let wrapper =
+        WRAPPER.init(ControllerWrapper::try_new(controller_mutex, Default::default(), referenced, Validator).unwrap());
 
-    static BATTERY: OnceLock<battery::Device> = OnceLock::new();
-    let battery = BATTERY.get_or_init(battery::Device::new);
-
-    comms::register_endpoint(battery, &battery.tp).await.unwrap();
-
-    static DEBUG_ACCESSORY: OnceLock<debug::Device> = OnceLock::new();
-    let debug_accessory = DEBUG_ACCESSORY.get_or_init(debug::Device::new);
-    comms::register_endpoint(debug_accessory, &debug_accessory.tp)
-        .await
-        .unwrap();
+    wrapper.register().await.unwrap();
+    spawner.must_spawn(pd_controller_task(wrapper));
 
     // Sync our internal state with the hardware
     type_c::external::sync_controller_state(CONTROLLER0_ID).await.unwrap();
@@ -222,9 +159,9 @@ async fn main(spawner: Spawner) {
 
     info!("Controller status: {:?}", status);
 
-    let status = type_c::external::get_port_status(PORT0_ID).await.unwrap();
+    let status = type_c::external::get_port_status(PORT0_ID, Cached(true)).await.unwrap();
     info!("Port status: {:?}", status);
 
-    let status = type_c::external::get_port_status(PORT1_ID).await.unwrap();
+    let status = type_c::external::get_port_status(PORT1_ID, Cached(true)).await.unwrap();
     info!("Port status: {:?}", status);
 }

@@ -16,7 +16,7 @@ use {defmt_rtt as _, panic_probe as _};
 // Mock battery service
 mod battery_service {
     use defmt::info;
-    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
     use embassy_sync::once_lock::OnceLock;
     use embassy_sync::signal::Signal;
     use embedded_services::comms::{self, EndpointID, External, Internal};
@@ -26,7 +26,7 @@ mod battery_service {
         endpoint: comms::Endpoint,
 
         // This is can be an Embassy signal or channel or whatever Embassy async notification construct
-        signal: Signal<NoopRawMutex, ec_type::message::BatteryMessage>,
+        signal: Signal<ThreadModeRawMutex, ec_type::message::BatteryMessage>,
     }
 
     impl Service {
@@ -96,6 +96,12 @@ unsafe extern "C" {
     static __end_espi_data: u8;
 }
 
+#[embassy_executor::task]
+async fn espi_service_task(espi: embassy_imxrt::espi::Espi<'static>, memory_map_buffer: &'static mut [u8]) -> ! {
+    let Err(e) = espi_service::task::espi_service(espi, memory_map_buffer).await;
+    panic!("espi_service_task error: {e:?}");
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_imxrt::init(Default::default());
@@ -148,7 +154,7 @@ async fn main(spawner: Spawner) {
         slice::from_raw_parts_mut(start_espi_data, espi_data_len)
     };
 
-    spawner.must_spawn(espi_service::espi_service(espi, memory_map_buffer));
+    spawner.must_spawn(espi_service_task(espi, memory_map_buffer));
 
     battery_service::init().await;
 

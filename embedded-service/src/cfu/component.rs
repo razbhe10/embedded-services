@@ -40,13 +40,15 @@ pub struct InternalState {
 impl InternalState {
     /// Constructor for a given `state`
     pub fn new(state: ComponentState) -> Self {
-        Self {
-            state,
-            waiting_on_subs: false,
-        }
+        Self::new_inner(state, false)
     }
+
     /// Constructor that uses given values for both `state` and `waiting_on_subs`
     pub fn new_with_subcomponent_info(state: ComponentState, waiting_on_subs: bool) -> Self {
+        Self::new_inner(state, waiting_on_subs)
+    }
+
+    fn new_inner(state: ComponentState, waiting_on_subs: bool) -> Self {
         Self { state, waiting_on_subs }
     }
 }
@@ -75,6 +77,8 @@ pub enum RequestData {
     PrepareComponentForUpdate,
     /// Request for component to execute any logic needed to finalize update
     FinalizeUpdate,
+    /// Request for component to execute any logic needed to abort update
+    AbortUpdate,
 }
 
 /// CFU Response types and necessary data
@@ -161,6 +165,8 @@ impl CfuDevice {
     }
 
     /// Wait for a request
+    ///
+    /// DROP SAFETY: Direct call to deferred channel primitive
     pub async fn wait_request(&self) -> RequestData {
         self.request.receive().await
     }
@@ -230,13 +236,25 @@ impl<W: CfuWriterAsync> CfuComponentDefault<W> {
                         .map(|x| x.unwrap_or_default())
                         .collect::<Vec<ComponentId, MAX_SUBCMPT_COUNT>>();
                     component_count += arr.len();
+
+                    const _: () = {
+                        core::assert!(
+                            MAX_CMPT_COUNT == MAX_SUBCMPT_COUNT + 1,
+                            "MAX_CMPT_COUNT must be one more than MAX_SUBCMPT_COUNT"
+                        );
+                    };
+                    #[allow(clippy::indexing_slicing)]
+                    // panic safety: adding 1 here is safe because MAX_CMPT_COUNT is 1 more than MAX_SUBCMPT_COUNT
                     for (index, id) in arr.iter().enumerate() {
                         //info!("Forwarding GetFwVersion command to sub-component: {}", id);
                         if let InternalResponseData::FwVersionResponse(fwv) =
                             route_request(*id, RequestData::FwVersionRequest).await?
                         {
-                            // adding 1 here is safe because MAX_CMPT_COUNT is 1 more than MAX_SUBCMPT_COUNT
-                            comp_info[index + 1] = fwv.component_info[0];
+                            comp_info[index + 1] = fwv
+                                .component_info
+                                .first()
+                                .cloned()
+                                .ok_or(CfuError::ProtocolError(CfuProtocolError::BadResponse))?;
                         } else {
                             /*error!(
                                 "Failed to get firmware version from sub-component: {}, adding dummy info to list",
@@ -281,6 +299,7 @@ impl<W: CfuWriterAsync> CfuComponentDefault<W> {
                     .await
                     .map_err(|e| CfuError::ProtocolError(CfuProtocolError::WriterError(e)))?;
             }
+            RequestData::AbortUpdate => {}
             RequestData::FinalizeUpdate => {}
             RequestData::GiveOfferExtended(_) => {
                 // Reject any extended offers
@@ -369,9 +388,12 @@ impl<W: CfuWriterAsync> CfuComponentStorage for CfuComponentDefault<W> {
     }
 }
 
+#[allow(clippy::unused_async)]
 async fn default_is_offer_valid() -> Result<OfferStatus, (OfferStatus, OfferRejectReason)> {
     Err((OfferStatus::Reject, OfferRejectReason::OldFw))
 }
+
+#[allow(clippy::unused_async)]
 async fn default_get_fw_version() -> Result<FwVersion, CfuProtocolError> {
     Ok(FwVersion::default())
 }

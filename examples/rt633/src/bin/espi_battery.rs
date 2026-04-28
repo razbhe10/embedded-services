@@ -17,7 +17,7 @@ use embedded_services::{error, info};
 use battery_service::controller::{Controller, ControllerEvent};
 use battery_service::device::{Device, DeviceId, DynamicBatteryMsgs, StaticBatteryMsgs};
 use battery_service::wrapper::Wrapper;
-use bq40z50_rx::Bq40z50;
+use bq40z50_rx::Bq40z50R5 as Bq40z50;
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_imxrt::bind_interrupts;
@@ -44,11 +44,12 @@ static FG_DEVICE: StaticCell<Device> = StaticCell::new();
 struct Bq40z50Controller {
     driver: Bq40z50<
         I2cDevice<'static, NoopRawMutex, embassy_imxrt::i2c::master::I2cMaster<'static, embassy_imxrt::i2c::Async>>,
+        embassy_time::Delay,
     >,
 }
 
 impl embedded_batteries_async::smart_battery::ErrorType for Bq40z50Controller {
-    type Error = <Bq40z50<I2cDevice<'static, NoopRawMutex, I2cMaster<'static, Async>>> as embedded_batteries_async::smart_battery::ErrorType>::Error;
+    type Error = <Bq40z50<I2cDevice<'static, NoopRawMutex, I2cMaster<'static, Async>>, embassy_time::Delay,> as embedded_batteries_async::smart_battery::ErrorType>::Error;
 }
 
 impl embedded_batteries_async::smart_battery::SmartBattery for Bq40z50Controller {
@@ -160,7 +161,7 @@ impl embedded_batteries_async::smart_battery::SmartBattery for Bq40z50Controller
 }
 
 impl Controller for Bq40z50Controller {
-    type ControllerError = <Bq40z50<I2cDevice<'static, NoopRawMutex, I2cMaster<'static, Async>>> as embedded_batteries_async::smart_battery::ErrorType>::Error;
+    type ControllerError = <Bq40z50<I2cDevice<'static, NoopRawMutex, I2cMaster<'static, Async>>, embassy_time::Delay,> as embedded_batteries_async::smart_battery::ErrorType>::Error;
 
     async fn initialize(&mut self) -> Result<(), Self::ControllerError> {
         info!("Fuel gauge inited!");
@@ -237,6 +238,18 @@ async fn wrapper_task(wrapper: Wrapper<'static, Bq40z50Controller>) {
     }
 }
 
+#[embassy_executor::task]
+async fn espi_service_task(espi: embassy_imxrt::espi::Espi<'static>, memory_map_buffer: &'static mut [u8]) -> ! {
+    let Err(e) = espi_service::task::espi_service(espi, memory_map_buffer).await;
+    panic!("espi_service_task error: {e:?}");
+}
+
+#[embassy_executor::task]
+async fn battery_service_task() -> ! {
+    battery_service::task::task().await;
+    unreachable!()
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_imxrt::init(Default::default());
@@ -289,7 +302,7 @@ async fn main(spawner: Spawner) {
         slice::from_raw_parts_mut(start_espi_data, espi_data_len)
     };
 
-    spawner.must_spawn(espi_service::espi_service(espi, memory_map_buffer));
+    spawner.must_spawn(espi_service_task(espi, memory_map_buffer));
 
     let config = embassy_imxrt::i2c::master::Config {
         speed: embassy_imxrt::i2c::master::Speed::Standard,
@@ -315,14 +328,14 @@ async fn main(spawner: Spawner) {
     let wrap = Wrapper::new(
         fg,
         Bq40z50Controller {
-            driver: Bq40z50::new(fg_bus),
+            driver: Bq40z50::new(fg_bus, embassy_time::Delay),
         },
     );
 
     spawner.must_spawn(wrapper_task(wrap));
-    spawner.must_spawn(battery_service::task());
+    spawner.must_spawn(battery_service_task());
 
-    battery_service::register_fuel_gauge(fg).await.unwrap();
+    battery_service::register_fuel_gauge(fg).unwrap();
 
     spawner.must_spawn(battery_publish_task(fg));
 

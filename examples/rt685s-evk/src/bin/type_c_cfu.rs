@@ -1,30 +1,30 @@
 #![no_std]
 #![no_main]
 
-use ::tps6699x::ADDR1;
-use defmt::info;
+use ::tps6699x::{ADDR1, TPS66994_NUM_PORTS};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_imxrt::gpio::{Input, Inverter, Pull};
-use embassy_imxrt::i2c::master::{Config, I2cMaster};
 use embassy_imxrt::i2c::Async;
+use embassy_imxrt::i2c::master::{Config, I2cMaster};
 use embassy_imxrt::{bind_interrupts, peripherals};
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_sync::once_lock::OnceLock;
 use embassy_time::Timer;
 use embassy_time::{self as _, Delay};
 use embedded_cfu_protocol::protocol_definitions::*;
 use embedded_cfu_protocol::protocol_definitions::{FwUpdateOffer, FwUpdateOfferResponse, FwVersion};
-use embedded_services::cfu;
 use embedded_services::cfu::component::InternalResponseData;
 use embedded_services::cfu::component::RequestData;
 use embedded_services::power::policy::DeviceId as PowerId;
 use embedded_services::type_c::{self, ControllerId};
+use embedded_services::{GlobalRawMutex, cfu};
+use embedded_services::{error, info};
 use embedded_usb_pd::GlobalPortId;
 use static_cell::StaticCell;
 use tps6699x::asynchronous::embassy as tps6699x;
 use type_c_service::driver::tps6699x::{self as tps6699x_drv};
+use type_c_service::wrapper::ControllerWrapper;
+use type_c_service::wrapper::backing::{ReferencedStorage, Storage};
 
 extern crate rt685s_evk_example;
 
@@ -42,10 +42,11 @@ impl type_c_service::wrapper::FwOfferValidator for Validator {
 }
 
 type BusMaster<'a> = I2cMaster<'a, Async>;
-type BusDevice<'a> = I2cDevice<'a, NoopRawMutex, BusMaster<'a>>;
-type Wrapper<'a> = tps6699x_drv::Tps66994Wrapper<'a, NoopRawMutex, BusDevice<'a>, Validator>;
-type Controller<'a> = tps6699x::controller::Controller<NoopRawMutex, BusDevice<'a>>;
-type Interrupt<'a> = tps6699x::Interrupt<'a, NoopRawMutex, BusDevice<'a>>;
+type BusDevice<'a> = I2cDevice<'a, GlobalRawMutex, BusMaster<'a>>;
+type Tps6699xMutex<'a> = Mutex<GlobalRawMutex, tps6699x_drv::Tps6699x<'a, GlobalRawMutex, BusDevice<'a>>>;
+type Wrapper<'a> = ControllerWrapper<'a, GlobalRawMutex, Tps6699xMutex<'a>, Validator>;
+type Controller<'a> = tps6699x::controller::Controller<GlobalRawMutex, BusDevice<'a>>;
+type Interrupt<'a> = tps6699x::Interrupt<'a, GlobalRawMutex, BusDevice<'a>>;
 
 const CONTROLLER0_ID: ControllerId = ControllerId(0);
 const CONTROLLER0_CFU_ID: ComponentId = 0x12;
@@ -57,7 +58,9 @@ const PORT1_PWR_ID: PowerId = PowerId(1);
 #[embassy_executor::task]
 async fn pd_controller_task(controller: &'static Wrapper<'static>) {
     loop {
-        controller.process().await;
+        if let Err(e) = controller.process_next_event().await {
+            error!("Error processing controller event: {:?}", e);
+        }
     }
 }
 
@@ -99,7 +102,7 @@ async fn fw_update_task() {
     info!("Got response: {:?}", offer);
 
     let fw = &[]; //include_bytes!("../../fw.bin");
-    let num_chunks = fw.len() / DEFAULT_DATA_LENGTH;
+    let num_chunks = fw.len() / DEFAULT_DATA_LENGTH + (fw.len() % DEFAULT_DATA_LENGTH != 0) as usize;
 
     for (i, chunk) in fw.chunks(DEFAULT_DATA_LENGTH).enumerate() {
         let header = FwUpdateContentHeader {
@@ -122,7 +125,7 @@ async fn fw_update_task() {
             data: chunk_data,
         };
 
-        info!("Sending chunk {} of {}", i, fw.len());
+        info!("Sending chunk {} of {}", i + 1, num_chunks);
         let response = device
             .execute_device_request(RequestData::GiveContent(request))
             .await
@@ -146,6 +149,19 @@ async fn fw_update_task() {
     info!("Got version: {:#x}", version);
 }
 
+#[embassy_executor::task]
+async fn type_c_service_task() -> ! {
+    type_c_service::task(Default::default()).await;
+    unreachable!()
+}
+
+#[embassy_executor::task]
+async fn power_policy_service_task() {
+    power_policy_service::task::task(Default::default())
+        .await
+        .expect("Failed to start power policy service task");
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_imxrt::init(Default::default());
@@ -156,18 +172,16 @@ async fn main(spawner: Spawner) {
     type_c::controller::init();
 
     info!("Spawining power policy task");
-    spawner.must_spawn(power_policy_service::task(Default::default()));
+    spawner.must_spawn(power_policy_service_task());
 
     info!("Spawining type-c service task");
-    spawner.must_spawn(type_c_service::task());
+    spawner.must_spawn(type_c_service_task());
 
     let int_in = Input::new(p.PIO1_7, Pull::Up, Inverter::Disabled);
-    static BUS: OnceLock<Mutex<NoopRawMutex, BusMaster<'static>>> = OnceLock::new();
-    let bus = BUS.get_or_init(|| {
-        Mutex::new(
-            I2cMaster::new_async(p.FLEXCOMM2, p.PIO0_18, p.PIO0_17, Irqs, Config::default(), p.DMA0_CH5).unwrap(),
-        )
-    });
+    static BUS: StaticCell<Mutex<GlobalRawMutex, BusMaster<'static>>> = StaticCell::new();
+    let bus = BUS.init(Mutex::new(
+        I2cMaster::new_async(p.FLEXCOMM2, p.PIO0_18, p.PIO0_17, Irqs, Config::default(), p.DMA0_CH5).unwrap(),
+    ));
 
     let device = I2cDevice::new(bus);
 
@@ -195,25 +209,30 @@ async fn main(spawner: Spawner) {
         .await
         .unwrap();
 
-    static PD_PORTS: [GlobalPortId; 2] = [PORT0_ID, PORT1_ID];
+    static STORAGE: StaticCell<Storage<TPS66994_NUM_PORTS, GlobalRawMutex>> = StaticCell::new();
+    let storage = STORAGE.init(Storage::new(
+        CONTROLLER0_ID,
+        CONTROLLER0_CFU_ID,
+        [(PORT0_ID, PORT0_PWR_ID), (PORT1_ID, PORT1_PWR_ID)],
+    ));
+
+    static REFERENCED: StaticCell<ReferencedStorage<TPS66994_NUM_PORTS, GlobalRawMutex>> = StaticCell::new();
+    let referenced = REFERENCED.init(
+        storage
+            .create_referenced()
+            .expect("Failed to create referenced storage"),
+    );
 
     info!("Spawining PD controller task");
-    static PD_CONTROLLER: OnceLock<Wrapper> = OnceLock::new();
-    let pd_controller = PD_CONTROLLER.get_or_init(|| {
-        tps6699x_drv::tps66994(
-            tps6699x,
-            CONTROLLER0_ID,
-            &PD_PORTS,
-            [PORT0_PWR_ID, PORT1_PWR_ID],
-            CONTROLLER0_CFU_ID,
-            Default::default(),
-            Validator,
-        )
-        .unwrap()
-    });
+    static CONTROLLER_MUTEX: StaticCell<Tps6699xMutex<'_>> = StaticCell::new();
+    let controller_mutex = CONTROLLER_MUTEX.init(Mutex::new(tps6699x_drv::tps66994(tps6699x, Default::default())));
 
-    pd_controller.register().await.unwrap();
-    spawner.must_spawn(pd_controller_task(pd_controller));
+    static WRAPPER: StaticCell<Wrapper> = StaticCell::new();
+    let wrapper =
+        WRAPPER.init(ControllerWrapper::try_new(controller_mutex, Default::default(), referenced, Validator).unwrap());
+
+    wrapper.register().await.unwrap();
+    spawner.must_spawn(pd_controller_task(wrapper));
 
     spawner.must_spawn(fw_update_task());
 }

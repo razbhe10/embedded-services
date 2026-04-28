@@ -128,6 +128,16 @@ impl<'a> Buffer<'a> {
         }
     }
 
+    async fn process_abort_update(&self) -> InternalResponseData {
+        match cfu::route_request(self.buffered_id, RequestData::AbortUpdate).await {
+            Ok(response) => response,
+            Err(e) => {
+                error!("Failed to abort update for device {}: {:?}", self.buffered_id, e);
+                InternalResponseData::ComponentBusy
+            }
+        }
+    }
+
     /// Process a give offer request
     async fn process_give_offer(&self, offer: &FwUpdateOffer) -> InternalResponseData {
         let mut offer = *offer;
@@ -225,11 +235,10 @@ impl<'a> Buffer<'a> {
     /// If the component is busy, this will wait indefinitely since the component will not be able to process
     async fn wait_buffered_content(&self, is_busy: bool) -> FwUpdateContentCommand {
         if is_busy {
-            let () = pending().await;
-            unreachable!();
-        } else {
-            self.buffer_receiver.receive().await
+            pending::<()>().await;
         }
+
+        self.buffer_receiver.receive().await
     }
 
     /// Wait for an event
@@ -307,6 +316,10 @@ impl<'a> Buffer<'a> {
             RequestData::GiveContent(content) => {
                 trace!("Got GiveContent");
                 self.process_give_content(state, &content).await
+            }
+            RequestData::AbortUpdate => {
+                trace!("Got AbortUpdate");
+                self.process_abort_update().await
             }
             RequestData::FinalizeUpdate => {
                 trace!("Got FinalizeUpdate");

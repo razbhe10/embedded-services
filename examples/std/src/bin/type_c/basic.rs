@@ -2,19 +2,20 @@ use embassy_executor::{Executor, Spawner};
 use embassy_sync::once_lock::OnceLock;
 use embassy_time::Timer;
 use embedded_services::power;
-use embedded_services::type_c::{controller, ControllerId};
+use embedded_services::type_c::{Cached, ControllerId, controller};
 use embedded_usb_pd::ucsi::lpm;
 use embedded_usb_pd::{GlobalPortId, PdError as Error};
 use log::*;
 use static_cell::StaticCell;
 
-const CONTROLLER0: ControllerId = ControllerId(0);
-const PORT0: GlobalPortId = GlobalPortId(0);
-const PORT1: GlobalPortId = GlobalPortId(1);
-const POWER0: power::policy::DeviceId = power::policy::DeviceId(0);
+const CONTROLLER0_ID: ControllerId = ControllerId(0);
+const PORT0_ID: GlobalPortId = GlobalPortId(0);
+const PORT1_ID: GlobalPortId = GlobalPortId(1);
+const POWER0_ID: power::policy::DeviceId = power::policy::DeviceId(0);
 
 mod test_controller {
     use embedded_services::type_c::controller::{ControllerStatus, PortStatus};
+    use embedded_usb_pd::ucsi;
 
     use super::*;
 
@@ -68,11 +69,21 @@ mod test_controller {
             }
         }
 
-        async fn process_ucsi_command(&self, command: lpm::Command) -> Result<lpm::ResponseData, Error> {
-            match command.operation {
-                lpm::CommandData::ConnectorReset(reset_type) => {
-                    info!("Reset ({:#?}) for port {:#?}", reset_type, command.port);
-                    Ok(lpm::ResponseData::Complete)
+        async fn process_ucsi_command(&self, command: &lpm::GlobalCommand) -> ucsi::GlobalResponse {
+            match command.operation() {
+                lpm::CommandData::ConnectorReset => {
+                    info!("Reset for port {:#?}", command.port());
+                    ucsi::Response {
+                        cci: ucsi::cci::Cci::new_cmd_complete(),
+                        data: None,
+                    }
+                }
+                rest => {
+                    info!("UCSI command {:#?} for port {:#?}", rest, command.port());
+                    ucsi::Response {
+                        cci: ucsi::cci::Cci::new_cmd_complete(),
+                        data: None,
+                    }
                 }
             }
         }
@@ -82,7 +93,7 @@ mod test_controller {
             command: controller::PortCommand,
         ) -> Result<controller::PortResponseData, Error> {
             Ok(match command.data {
-                controller::PortCommandData::PortStatus => {
+                controller::PortCommandData::PortStatus(Cached(true)) => {
                     info!("Port status for port {}", command.port.0);
                     controller::PortResponseData::PortStatus(PortStatus::new())
                 }
@@ -100,7 +111,7 @@ mod test_controller {
                     controller::Response::Controller(self.process_controller_command(command).await)
                 }
                 controller::Command::Lpm(command) => {
-                    controller::Response::Lpm(self.process_ucsi_command(command).await)
+                    controller::Response::Ucsi(self.process_ucsi_command(&command).await)
                 }
                 controller::Command::Port(command) => {
                     controller::Response::Port(self.process_port_command(command).await)
@@ -116,10 +127,10 @@ mod test_controller {
 async fn controller_task() {
     static CONTROLLER: OnceLock<test_controller::Controller> = OnceLock::new();
 
-    static PORTS: [GlobalPortId; 2] = [PORT0, PORT1];
+    static PORTS: [GlobalPortId; 2] = [PORT0_ID, PORT1_ID];
 
-    let controller = CONTROLLER.get_or_init(|| test_controller::Controller::new(CONTROLLER0, POWER0, &PORTS));
-    controller::register_controller(controller).await.unwrap();
+    let controller = CONTROLLER.get_or_init(|| test_controller::Controller::new(CONTROLLER0_ID, POWER0_ID, &PORTS));
+    controller::register_controller(controller).unwrap();
 
     loop {
         controller.process().await;
@@ -139,20 +150,15 @@ async fn task(spawner: Spawner) {
 
     let context = controller::ContextToken::create().unwrap();
 
-    context.reset_controller(CONTROLLER0).await.unwrap();
-    info!("Reset controller done");
-    context.reset_port(PORT0, lpm::ResetType::Hard).await.unwrap();
-    info!("Reset port 0 done");
-    context.reset_port(PORT1, lpm::ResetType::Data).await.unwrap();
-    info!("Reset port 1 done");
+    context.reset_controller(CONTROLLER0_ID).await.unwrap();
 
-    let status = context.get_controller_status(CONTROLLER0).await.unwrap();
+    let status = context.get_controller_status(CONTROLLER0_ID).await.unwrap();
     info!("Controller 0 status: {status:#?}");
 
-    let status = context.get_port_status(PORT0).await.unwrap();
+    let status = context.get_port_status(PORT0_ID, Cached(true)).await.unwrap();
     info!("Port 0 status: {status:#?}");
 
-    let status = context.get_port_status(PORT1).await.unwrap();
+    let status = context.get_port_status(PORT1_ID, Cached(true)).await.unwrap();
     info!("Port 1 status: {status:#?}");
 }
 

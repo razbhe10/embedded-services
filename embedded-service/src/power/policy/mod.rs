@@ -2,6 +2,7 @@
 pub mod action;
 pub mod charger;
 pub mod device;
+pub mod flags;
 pub mod policy;
 
 pub use policy::{init, register_device};
@@ -35,7 +36,7 @@ pub enum Error {
 }
 
 /// Device ID new type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DeviceId(pub u8);
 
@@ -68,6 +69,74 @@ impl Ord for PowerCapability {
     }
 }
 
+/// Power capability with consumer flags
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ConsumerPowerCapability {
+    /// Power capability
+    pub capability: PowerCapability,
+    /// Consumer flags
+    pub flags: flags::Consumer,
+}
+
+impl From<PowerCapability> for ConsumerPowerCapability {
+    fn from(capability: PowerCapability) -> Self {
+        Self {
+            capability,
+            flags: flags::Consumer::none(),
+        }
+    }
+}
+
+/// Power capability with provider flags
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ProviderPowerCapability {
+    /// Power capability
+    pub capability: PowerCapability,
+    /// Provider flags
+    pub flags: flags::Provider,
+}
+
+impl From<PowerCapability> for ProviderPowerCapability {
+    fn from(capability: PowerCapability) -> Self {
+        Self {
+            capability,
+            flags: flags::Provider::none(),
+        }
+    }
+}
+
+/// Combined power capability with flags enum
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum PowerCapabilityFlags {
+    /// Consumer flags
+    Consumer(ConsumerPowerCapability),
+    /// Provider flags
+    Provider(ProviderPowerCapability),
+}
+
+/// Unconstrained state information
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct UnconstrainedState {
+    /// Unconstrained state
+    pub unconstrained: bool,
+    /// Available unconstrained devices
+    pub available: usize,
+}
+
+impl UnconstrainedState {
+    /// Create a new unconstrained state
+    pub fn new(unconstrained: bool, available: usize) -> Self {
+        Self {
+            unconstrained,
+            available,
+        }
+    }
+}
+
 /// Data to send with the comms service
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -75,9 +144,17 @@ pub enum CommsData {
     /// Consumer disconnected
     ConsumerDisconnected(DeviceId),
     /// Consumer connected
-    ConsumerConnected(DeviceId, PowerCapability),
+    ConsumerConnected(DeviceId, ConsumerPowerCapability),
+    /// Provider disconnected
+    ProviderDisconnected(DeviceId),
+    /// Provider connected
+    ProviderConnected(DeviceId, ProviderPowerCapability),
+    /// Unconstrained state changed
+    Unconstrained(UnconstrainedState),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 /// Message to send with the comms service
 pub struct CommsMessage {
     /// Message data

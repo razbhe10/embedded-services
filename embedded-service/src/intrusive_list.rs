@@ -12,14 +12,14 @@ pub enum Error {
     NodeAlreadyInList,
 }
 
-/// override Result type for shorthand -> Result<T>
+/// override Result type for shorthand `-> Result<T>`
 pub type Result<T> = core::result::Result<T, Error>;
 
 /// Embedded node that "intrudes" on a structure
 #[derive(Copy, Clone, Debug)]
 pub struct IntrusiveNode {
     /// offset from &self to struct data. Typically := sizeof(IntrusiveNode)
-    address_of_data: *const dyn Any,
+    address_of_data: &'static dyn Any,
 
     /// unsafe iterator type
     next: Option<&'static IntrusiveNode>,
@@ -40,7 +40,7 @@ impl Node {
 
     /// shorthand constant for no elements in list
     pub const EMPTY: IntrusiveNode = IntrusiveNode {
-        address_of_data: &Node::INVALID as *const dyn Any,
+        address_of_data: &Node::INVALID,
         next: None,
         valid: false,
     };
@@ -69,7 +69,7 @@ impl IntrusiveNode {
     /// generate an empty node for use within whatever type T
     fn new<T: NodeContainer>(this_ref: &'static T) -> IntrusiveNode {
         IntrusiveNode {
-            address_of_data: (this_ref as *const T) as *const dyn Any,
+            address_of_data: this_ref,
             next: None,
             valid: true,
         }
@@ -78,8 +78,7 @@ impl IntrusiveNode {
     /// retrieve the underlying dynamic type information (vtable)
     pub fn data<T: NodeContainer>(&self) -> Option<&T> {
         if self.valid {
-            // SAFETY: enforced via type constraint and new interface
-            unsafe { &*self.address_of_data }.downcast_ref()
+            self.address_of_data.downcast_ref()
         } else {
             None
         }
@@ -415,6 +414,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn test_monotype_list() {
         let list_a = IntrusiveList::new();
         let list_b = IntrusiveList::new();
@@ -463,6 +463,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn test_multitype_list() {
         // list with multiple types within it (same registration type)
         let list_a = IntrusiveList::new();
@@ -499,6 +500,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn test_multi_list() {
         // nodes in multiple lists
         let list_a = IntrusiveList::new();
@@ -555,6 +557,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn test_multi_registration_list() {
         // list with multiple registration types
         let list = IntrusiveList::new();

@@ -2,6 +2,7 @@
 use core::mem::offset_of;
 
 pub mod message;
+pub mod protocols;
 pub mod structure;
 
 /// Error type
@@ -503,6 +504,7 @@ pub fn mem_map_to_time_alarm_msg(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

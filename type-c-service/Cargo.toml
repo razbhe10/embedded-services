@@ -1,38 +1,41 @@
 [package]
 name = "type-c-service"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "HID embedded service implementation"
 repository = "https://github.com/OpenDevicePartnership/embedded-services"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
+
+[package.metadata.cargo-machete]
+ignored = ["log"]
+
+[lints]
+workspace = true
 
 [dependencies]
 bitfield.workspace = true
+bitflags = { workspace = true }
 defmt = { workspace = true, optional = true }
 embedded-cfu-protocol.workspace = true
-embassy-executor.workspace = true
 embassy-futures.workspace = true
 embassy-sync.workspace = true
 embassy-time.workspace = true
 embedded-hal-async.workspace = true
-embedded-hal.workspace = true
-embedded-io-async.workspace = true
 embedded-services.workspace = true
 embedded-usb-pd.workspace = true
+heapless.workspace = true
 log = { workspace = true, optional = true }
+static_cell = { workspace = true }
 tps6699x = { workspace = true, features = ["embassy"] }
 
 [dev-dependencies]
+embassy-time = { workspace = true, features = ["std", "generic-queue-8"] }
 embassy-sync = { workspace = true, features = ["std"] }
 critical-section = { workspace = true, features = ["std"] }
-embassy-time = { workspace = true, features = ["std"] }
 embassy-time-driver = { workspace = true }
-embassy-executor = { workspace = true, features = [
-    "arch-std",
-    "executor-thread",
-] }
 embassy-futures.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
 [features]
 default = []
@@ -41,7 +44,6 @@ defmt = [
     "embedded-services/defmt",
     "embassy-time/defmt",
     "embassy-sync/defmt",
-    "embassy-executor/defmt",
     "tps6699x/defmt",
     "embedded-usb-pd/defmt",
 ]
@@ -50,6 +52,5 @@ log = [
     "embedded-services/log",
     "embassy-time/log",
     "embassy-sync/log",
-    "embassy-executor/log",
     "tps6699x/log",
 ]
