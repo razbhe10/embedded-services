@@ -195,6 +195,7 @@ impl<A: AddressMode + Copy, B: I2c<A>> Device<A, B> {
 
             // Read the full response (including length prefix) into buf
             let read_len = response_len.min(buffer_len);
+            trace!("Reading response: expected length={}, buffer length={}, read length={}", response_len, buffer_len, read_len);
             if let Err(e) = bus.read(self.address, &mut buf[..read_len]).await {
                 error!("Failed to read response data");
                 return Err(Error::Bus(e));
@@ -203,7 +204,7 @@ impl<A: AddressMode + Copy, B: I2c<A>> Device<A, B> {
             return Ok(Some(Response::FeatureReport(
                 self.buffer
                     .reference()
-                    .slice(0..response_len.min(buffer_len))
+                    .slice(0..read_len)
                     .map_err(Error::Buffer)?,
             )));
         }
