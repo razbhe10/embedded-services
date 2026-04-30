@@ -182,7 +182,6 @@ impl<A: AddressMode + Copy, B: I2c<A>> Device<A, B> {
         if opcode.has_response() {
             // Two-phase read: first read the 2-byte length prefix, then read the remaining data.
             // This avoids clocking out the entire buffer over I2C when the response is small.
-            trace!("Reading response length prefix");
             let mut len_prefix = [0u8; 2];
             if let Err(e) = bus.read(self.address, &mut len_prefix).await {
                 error!("Failed to read response length prefix");
@@ -196,7 +195,6 @@ impl<A: AddressMode + Copy, B: I2c<A>> Device<A, B> {
 
             // Read the full response (including length prefix) into buf
             let read_len = response_len.min(buffer_len);
-            trace!("Reading {} response bytes", read_len);
             if let Err(e) = bus.read(self.address, &mut buf[..read_len]).await {
                 error!("Failed to read response data");
                 return Err(Error::Bus(e));
